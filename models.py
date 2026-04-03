@@ -183,11 +183,13 @@ class Draft(db.Model):
                 'template_type': self.template_type or '',
                 'template_name': self.template_name or '',
                 'old_name': self.old_name or '',
-                'replacements': self.replacements,  # Already returns dict
-                'preview_data': self.preview_data,  # Already returns dict
+                'replacements': self.replacements,  
+                'preview_data': self.preview_data,
                 'status': self.status or 'draft',
                 'output_folder': self.output_folder or '',
-                'generated_files': self.generated_files,  # Already returns list
+                'generated_files': self.generated_files,
+                'published': self.published if self.published is not None else False,
+                'published_at': self.published_at.isoformat() if self.published_at else None,
                 'created_at': self.created_at.isoformat() if self.created_at else None,
                 'modified_at': self.modified_at.isoformat() if self.modified_at else None,
                 'approved_at': self.approved_at.isoformat() if self.approved_at else None,
