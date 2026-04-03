@@ -58,13 +58,13 @@ SQLALCHEMY_ENGINE_OPTIONS = {
 }
 
 if not IS_D1:
-    SQLALCHEMY_ENGINE_OPTIONS.update({
-        'pool_size': 10,           # Connection pool size
-        'max_overflow': 20,        # Extra connections
-        'pool_timeout': 30,        # Connection timeout
-        'pool_pre_ping': True,     # Verify connections
-        'pool_recycle': 3600,      # Recycle after 1 hour
-    })
+    SQLALCHEMY_ENGINE_OPTIONS = {
+    'pool_pre_ping': True,
+    'pool_recycle': 300,
+    'connect_args': {
+        'sslmode': 'require'  # Forces the driver to use SSL
+    }
+}
 # OTP API Configuration (works for both production and development)
 OTP_SEND_URL = 'https://kspapp.ksp.gov.in/ksp/api/traffic-challan/getotp'
 OTP_VERIFY_URL = 'https://kspapp.ksp.gov.in/ksp/api/traffic-challan/verify-otp'
