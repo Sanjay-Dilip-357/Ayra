@@ -707,54 +707,25 @@
 
         /* Print-specific styles */
         @media print {
-            body * {
-                visibility: hidden;
-            }
-
-            .print-preview-modal .modal-body,
-            .print-preview-modal .modal-body * {
-                visibility: visible;
-            }
-
-            .print-preview-modal .modal-body {
-                position: absolute;
-                left: 0;
-                top: 0;
-                width: 100%;
-                padding: 0 !important;
+            .no-print {
+                display: none !important;
             }
 
             .print-document-wrapper {
                 page-break-after: always;
                 page-break-inside: avoid;
-                border: none !important;
-                box-shadow: none !important;
-                margin: 0 !important;
-                border-radius: 0 !important;
             }
 
             .print-document-wrapper:last-child {
                 page-break-after: auto;
             }
 
-            .print-document-header {
-                background: #333 !important;
-                -webkit-print-color-adjust: exact !important;
-                print-color-adjust: exact !important;
-                color: white !important;
-            }
-
-            .print-document-body {
-                max-height: none !important;
-                overflow: visible !important;
-                padding: 1.5cm !important;
-            }
-
-            .no-print,
-            .alert,
-            .modal-header,
-            .modal-footer {
-                display: none !important;
+            .replaced-value {
+                background: none !important;
+                border: none !important;
+                padding: 0 !important;
+                font-weight: normal !important;
+                color: inherit !important;
             }
         }
 
