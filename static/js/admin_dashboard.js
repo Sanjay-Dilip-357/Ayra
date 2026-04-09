@@ -1188,85 +1188,24 @@ async function saveDocumentChanges() {
 // ==================== PRINT PREVIEW ====================
 
 async function showPrintPreview(docId) {
-    const doc = allDocuments.find(d => d.id === docId);
-    if (!doc) return;
-
-    const modalBody = document.getElementById('printPreviewBody');
-    modalBody.innerHTML = `
-        <div class="text-center py-5">
-            <div class="spinner-border text-primary" role="status">
-                <span class="visually-hidden">Loading...</span>
-            </div>
-            <p class="mt-3">Loading print preview...</p>
-        </div>
-    `;
-
-    const modal = new bootstrap.Modal(document.getElementById('printPreviewModal'));
-    modal.show();
-
     try {
-        const response = await fetch(`/api/admin/documents/${docId}/print-preview`);
-        const data = await response.json();
-
-        if (data.success && data.documents) {
-            let html = `
-                <div class="print-preview-container">
-                    <div class="alert alert-info mb-4 no-print">
-                        <div class="d-flex justify-content-between align-items-center">
-                            <div>
-                                <i class="bi bi-info-circle me-2"></i>
-                                <strong>${data.documents.length} documents</strong> ready for printing. 
-                                <span class="text-danger fw-bold">Witness document will print twice.</span>
-                            </div>
-                            <div>
-                                <span class="badge bg-primary">${data.document_name}</span>
-                            </div>
-                        </div>
-                    </div>
-            `;
-
-            data.documents.forEach((doc, index) => {
-                const printCopies = doc.print_count || 1;
-                const isWitness = doc.filename.toUpperCase().includes('WITNESS');
-                const headerColor = isWitness ? '#ed8936' : '#667eea';
-                
-                for (let copy = 1; copy <= printCopies; copy++) {
-                    const copyLabel = printCopies > 1 ? ` (Copy ${copy} of ${printCopies})` : '';
-                    
-                    html += `
-                        <div class="print-document-wrapper" style="page-break-after: always;">
-                            <div class="print-document-header" style="background: linear-gradient(135deg, ${headerColor} 0%, ${isWitness ? '#dd6b20' : '#764ba2'} 100%);">
-                                <span class="doc-name">
-                                    <i class="bi bi-file-earmark-text me-2"></i>
-                                    ${doc.filename}${copyLabel}
-                                </span>
-                                ${isWitness ? '<span class="print-count-badge"><i class="bi bi-files me-1"></i>2 Copies Required</span>' : ''}
-                            </div>
-                            <div class="print-document-body">
-                                ${doc.content}
-                            </div>
-                        </div>
-                    `;
-                }
+        showToast('Info', 'Preparing document for printing...', 'info');
+        
+        // Open HTML print view in new tab
+        const printWindow = window.open(`/api/admin/documents/${docId}/print-html`, '_blank');
+        
+        if (printWindow) {
+            printWindow.addEventListener('load', function() {
+                setTimeout(() => {
+                    printWindow.print();
+                }, 1000);
             });
-
-            html += `</div>`;
-            modalBody.innerHTML = html;
-        } else {
-            modalBody.innerHTML = `
-                <div class="text-center py-5">
-                    <i class="bi bi-exclamation-circle text-warning" style="font-size: 3rem;"></i>
-                    <p class="mt-3">${data.message || 'Could not load print preview'}</p>
-                </div>
-            `;
         }
+        
+        showToast('Success', 'Document ready for printing', 'success');
     } catch (error) {
-        modalBody.innerHTML = `
-            <div class="text-center py-5">
-                <i class="bi bi-x-circle text-danger" style="font-size: 3rem;"></i>
-                <p class="mt-3">Error loading print preview</p>
-            </div>
-        `;
+        console.error('Print error:', error);
+        showToast('Error', 'Network error', 'error');
     }
 }
 
