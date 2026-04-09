@@ -2,6 +2,7 @@ import os
 import re
 import csv
 import json
+import html
 import random
 import zipfile
 from io import BytesIO
@@ -11,6 +12,8 @@ from docx import Document
 from functools import wraps
 from datetime import datetime
 from otp_service import OTPService
+from docx.shared import Pt, RGBColor
+from docx.enum.text import WD_ALIGN_PARAGRAPH
 from config import (TEMPLATE_CONFIG, RELATION_MAPPING, CAST_OPTIONS, 
                    DEFAULT_USER_PASSWORD, DEFAULT_ADMIN_PASSWORD,
                    SQLALCHEMY_DATABASE_URI, IS_PRODUCTION)
@@ -3728,6 +3731,673 @@ def api_print_preview(doc_id):
         traceback.print_exc()
         return jsonify({'success': False, 'message': str(e)}), 500
 
+
+@app.route('/api/admin/documents/<doc_id>/print-html', methods=['GET'])
+@admin_required
+def api_print_html_preview(doc_id):
+    """Generate HTML preview with perfect formatting for printing"""
+    try:
+        draft = Draft.query.get(doc_id)
+        
+        if not draft:
+            return jsonify({'success': False, 'message': 'Document not found'}), 404
+        
+        preview_data = draft.preview_data or {}
+        template_folder = preview_data.get('template_folder')
+        
+        if not template_folder:
+            template_config = TEMPLATE_CONFIG.get(draft.template_type, {})
+            folder_type = preview_data.get('folder_type', 'main')
+            
+            if folder_type == 'unmarried' and 'unmarried_subfolder' in template_config:
+                template_folder = template_config['unmarried_subfolder']
+            else:
+                template_folder = template_config.get('folder', '')
+        
+        if not template_folder:
+            return jsonify({'success': False, 'message': 'Template folder not configured'}), 400
+        
+        template_folder_path = Path(template_folder)
+        replacements = draft.replacements or {}
+        
+        # Clean replacements
+        clean_replacements = {}
+        for key, value in replacements.items():
+            if value is not None:
+                clean_replacements[key] = html.escape(str(value))
+            else:
+                clean_replacements[key] = ''
+        
+        # Build HTML document
+        all_documents_html = []
+        
+        # Get all DOCX files in order
+        docx_files = []
+        if template_folder_path.exists():
+            for file in sorted(template_folder_path.iterdir()):
+                if file.is_file() and file.suffix.lower() == '.docx' and not file.name.startswith('~$'):
+                    docx_files.append(file)
+        
+        for docx_file in docx_files:
+            doc = Document(str(docx_file))
+            
+            # Build HTML for this document
+            doc_html = []
+            
+            # Add document title/header
+            doc_html.append(f'''
+            <div class="print-document-wrapper">
+
+                <div class="print-document-body">
+            ''')
+            
+            # Process each paragraph in order
+            for paragraph in doc.paragraphs:
+                para_html = process_paragraph_html(paragraph, clean_replacements)
+                if para_html:
+                    doc_html.append(para_html)
+            
+            # Process tables
+            for table in doc.tables:
+                table_html = process_table_html(table, clean_replacements)
+                if table_html:
+                    doc_html.append(table_html)
+            
+            doc_html.append('</div></div>')
+            all_documents_html.append(''.join(doc_html))
+        
+        # Generate full HTML page
+        full_html = generate_print_html_page(all_documents_html, draft.old_name)
+        
+        return full_html
+    
+    except Exception as e:
+        app.logger.error(f'Print HTML error: {str(e)}')
+        import traceback
+        traceback.print_exc()
+        return f"""
+        <!DOCTYPE html>
+        <html>
+        <head><title>Error</title></head>
+        <body>
+            <div style="text-align: center; padding: 50px; color: red;">
+                <h3>Error generating print preview</h3>
+                <p>{html.escape(str(e))}</p>
+            </div>
+        </body>
+        </html>
+        """, 500
+    
+
+def process_paragraph_html(paragraph, replacements):
+    """Process a paragraph and return HTML with preserved numbering, indentation, and formatting"""
+    try:
+        # Get the full text of the paragraph
+        full_text = paragraph.text
+        
+        if not full_text.strip():
+            return None
+        
+        # Apply replacements to the text
+        result_text = full_text
+        
+        # Sort replacements by length (longest first) to avoid partial replacements
+        sorted_replacements = sorted(replacements.items(), key=lambda x: len(x[0]), reverse=True)
+        
+        for key, value in sorted_replacements:
+            if key in result_text:
+                if value and value.strip():
+                    # Wrap replaced value with bold and highlight
+                    result_text = result_text.replace(key, f'<strong class="replaced-value-bold">{value}</strong>')
+                else:
+                    # Remove empty placeholders
+                    result_text = result_text.replace(key, '')
+        
+        # Clean up extra spaces
+        result_text = re.sub(r'\s+', ' ', result_text)
+        result_text = re.sub(r'\s+\.', '.', result_text)
+        result_text = re.sub(r'\s+,', ',', result_text)
+        result_text = result_text.strip()
+        
+        if not result_text:
+            return None
+        
+        # Build paragraph style
+        styles = []
+        
+        # Get paragraph alignment
+        align_style = ''
+        if paragraph.alignment:
+            from docx.enum.text import WD_ALIGN_PARAGRAPH
+            if paragraph.alignment == WD_ALIGN_PARAGRAPH.CENTER:
+                align_style = 'text-align: center;'
+            elif paragraph.alignment == WD_ALIGN_PARAGRAPH.RIGHT:
+                align_style = 'text-align: right;'
+            elif paragraph.alignment == WD_ALIGN_PARAGRAPH.JUSTIFY:
+                align_style = 'text-align: justify;'
+        
+        # Get paragraph indentation
+        indent_left = 0
+        indent_right = 0
+        indent_first_line = 0
+        
+        if paragraph.paragraph_format:
+            if paragraph.paragraph_format.left_indent:
+                indent_left = paragraph.paragraph_format.left_indent.pt
+            if paragraph.paragraph_format.right_indent:
+                indent_right = paragraph.paragraph_format.right_indent.pt
+            if paragraph.paragraph_format.first_line_indent:
+                indent_first_line = paragraph.paragraph_format.first_line_indent.pt
+        
+        if indent_left > 0:
+            styles.append(f'margin-left: {indent_left}pt;')
+        if indent_right > 0:
+            styles.append(f'margin-right: {indent_right}pt;')
+        if indent_first_line > 0:
+            styles.append(f'text-indent: {indent_first_line}pt;')
+        
+        # Get paragraph spacing
+        space_before = 0
+        space_after = 0
+        line_spacing = 1.5
+        
+        if paragraph.paragraph_format:
+            if paragraph.paragraph_format.space_before:
+                space_before = paragraph.paragraph_format.space_before.pt
+            if paragraph.paragraph_format.space_after:
+                space_after = paragraph.paragraph_format.space_after.pt
+            if paragraph.paragraph_format.line_spacing:
+                line_spacing = paragraph.paragraph_format.line_spacing
+        
+        if space_before > 0:
+            styles.append(f'margin-top: {space_before}pt;')
+        if space_after > 0:
+            styles.append(f'margin-bottom: {space_after}pt;')
+        
+        # Check if this is a numbered list item
+        is_list_item = False
+        list_level = 0
+        list_type = None
+        
+        if paragraph.style and paragraph.style.name:
+            style_name = paragraph.style.name.lower()
+            if 'list' in style_name or 'number' in style_name:
+                is_list_item = True
+                if 'bullet' in style_name:
+                    list_type = 'bullet'
+                else:
+                    list_type = 'number'
+        
+        # Get font information from runs
+        font_styles = []
+        if paragraph.runs:
+            first_run = paragraph.runs[0]
+            if first_run.font and first_run.font.size:
+                font_styles.append(f'font-size: {first_run.font.size.pt}pt;')
+            if first_run.font and first_run.font.name:
+                font_styles.append(f'font-family: "{first_run.font.name}", Calibri, "Times New Roman", serif;')
+            if first_run.bold:
+                font_styles.append('font-weight: bold;')
+            if first_run.underline:
+                font_styles.append('text-decoration: underline;')
+        
+        # Build the paragraph HTML
+        style_str = ' '.join(styles + font_styles)
+        
+        if is_list_item:
+            # For list items, preserve numbering
+            list_class = 'print-list-item'
+            if list_type == 'number':
+                list_class = 'print-numbered-item'
+            return f'<div class="{list_class}" style="{align_style} {style_str} margin-bottom: 6px;">{result_text}</div>'
+        else:
+            return f'<p style="{align_style} {style_str} margin-bottom: 12px; line-height: {line_spacing};">{result_text}</p>'
+    
+    except Exception as e:
+        app.logger.error(f'Error processing paragraph: {e}')
+        return None
+
+def process_numbering(doc, numbering_styles):
+    """Extract numbering information from document"""
+    try:
+        if doc.numbering_part and doc.numbering_part.numbering:
+            for num in doc.numbering_part.numbering._numbering_lst:
+                if num.numId:
+                    numbering_styles[num.numId] = {
+                        'type': 'decimal',
+                        'level': 0
+                    }
+    except Exception as e:
+        app.logger.error(f'Error processing numbering: {e}')
+
+def process_table_html(table, replacements):
+    """Process table and return HTML with ALL replacements applied"""
+    try:
+        html_rows = []
+        
+        for row in table.rows:
+            html_cells = []
+            for cell in row.cells:
+                # Get full cell text
+                cell_text = cell.text
+                
+                if not cell_text.strip():
+                    html_cells.append('<td>&nbsp;</td>')
+                    continue
+                
+                # Apply all replacements
+                modified_text = cell_text
+                for key, value in replacements.items():
+                    if key in modified_text:
+                        if value and value.strip():
+                            modified_text = modified_text.replace(key, f'<span class="replaced-value">{value}</span>')
+                        else:
+                            modified_text = modified_text.replace(key, '')
+                
+                # Clean up
+                modified_text = re.sub(r'\s+', ' ', modified_text).strip()
+                
+                # Check for any runs with formatting in this cell
+                cell_html = []
+                for paragraph in cell.paragraphs:
+                    if paragraph.runs:
+                        # Process each run for inline formatting
+                        for run in paragraph.runs:
+                            run_text = run.text
+                            if not run_text:
+                                continue
+                            
+                            # Apply replacements to run text
+                            for key, value in replacements.items():
+                                if key in run_text:
+                                    if value and value.strip():
+                                        run_text = run_text.replace(key, f'<span class="replaced-value">{value}</span>')
+                                    else:
+                                        run_text = run_text.replace(key, '')
+                            
+                            # Build inline styles
+                            styles = []
+                            if run.bold:
+                                styles.append('font-weight: bold;')
+                            if run.italic:
+                                styles.append('font-style: italic;')
+                            if run.underline:
+                                styles.append('text-decoration: underline;')
+                            if run.font and run.font.size:
+                                styles.append(f'font-size: {run.font.size.pt}pt;')
+                            
+                            if styles:
+                                cell_html.append(f'<span style="{" ".join(styles)}">{run_text}</span>')
+                            else:
+                                cell_html.append(run_text)
+                
+                if cell_html:
+                    final_html = ''.join(cell_html)
+                else:
+                    final_html = modified_text
+                
+                html_cells.append(f'<td>{final_html}</td>')
+            
+            html_rows.append(f'<tr>{"".join(html_cells)}</tr>')
+        
+        if html_rows:
+            return f'<table class="print-table" style="width: 100%; border-collapse: collapse; margin: 20px 0;">{"".join(html_rows)}</table>'
+        
+        return None
+    
+    except Exception as e:
+        app.logger.error(f'Error processing table: {e}')
+        return None
+
+
+def generate_print_html_page(documents_html, document_name):
+    """Generate complete HTML page for printing with proper layout"""
+    return f"""
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
+        <title>Print Preview - {html.escape(document_name or 'Document')}</title>
+        <style>
+            * {{
+                margin: 0;
+                padding: 0;
+                box-sizing: border-box;
+            }}
+            
+            body {{
+                background: #e2e8f0;
+                padding: 20px;
+                font-family: 'Calibri', 'Times New Roman', Times, serif;
+            }}
+            
+            .print-container {{
+                max-width: 1100px;
+                margin: 0 auto;
+            }}
+            
+            .print-controls {{
+                position: fixed;
+                bottom: 20px;
+                right: 20px;
+                z-index: 1000;
+                display: flex;
+                gap: 10px;
+                flex-wrap: wrap;
+            }}
+            
+            .print-btn {{
+                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                color: white;
+                border: none;
+                padding: 12px 24px;
+                border-radius: 8px;
+                cursor: pointer;
+                font-size: 14px;
+                font-weight: 600;
+                box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+                transition: all 0.3s ease;
+                font-family: system-ui, -apple-system, sans-serif;
+            }}
+            
+            .print-btn:hover {{
+                transform: translateY(-2px);
+                box-shadow: 0 6px 16px rgba(0,0,0,0.2);
+            }}
+            
+            .print-document-wrapper {{
+                background: white;
+                border-radius: 12px;
+                margin-bottom: 30px;
+                box-shadow: 0 4px 20px rgba(0,0,0,0.1);
+                overflow: hidden;
+            }}
+            
+            .print-document-header {{
+                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                color: white;
+                padding: 12px 24px;
+                font-weight: 600;
+            }}
+            
+            .print-document-body {{
+                padding: 40px;
+                background: white;
+            }}
+            
+            /* Paragraph styles - preserve layout */
+            p {{
+                margin-bottom: 12px;
+                line-height: 1.6;
+            }}
+            
+            /* List item styles for numbering */
+            .print-list-item,
+            .print-numbered-item {{
+                margin-bottom: 6px;
+                line-height: 1.6;
+                position: relative;
+            }}
+            
+            /* Bold replaced values */
+            .replaced-value-bold {{
+                font-weight: bold !important;
+                background-color: #d4edda;
+                padding: 2px 4px;
+                border-radius: 4px;
+            }}
+            
+            /* Table styles */
+            .print-table {{
+                width: 100%;
+                border-collapse: collapse;
+                margin: 20px 0;
+            }}
+            
+            .print-table td,
+            .print-table th {{
+                border: 1px solid #000;
+                padding: 10px;
+                vertical-align: top;
+            }}
+            
+            /* Mobile responsive */
+            @media (max-width: 768px) {{
+                body {{
+                    padding: 10px;
+                }}
+                
+                .print-document-body {{
+                    padding: 20px;
+                }}
+                
+                .print-controls {{
+                    bottom: 10px;
+                    right: 10px;
+                }}
+                
+                .print-btn {{
+                    padding: 8px 16px;
+                    font-size: 12px;
+                }}
+            }}
+            
+            /* Print styles - preserve everything */
+            @media print {{
+                body {{
+                    background: white;
+                    padding: 0;
+                    margin: 0;
+                }}
+                
+                .print-controls {{
+                    display: none;
+                }}
+                
+                .print-document-wrapper {{
+                    box-shadow: none;
+                    margin: 0;
+                    page-break-after: always;
+                    border-radius: 0;
+                }}
+                
+                .print-document-wrapper:last-child {{
+                    page-break-after: auto;
+                }}
+                
+                .print-document-body {{
+                    padding: 1.5cm;
+                }}
+                
+                .replaced-value-bold {{
+                    background: none !important;
+                    padding: 0 !important;
+                    font-weight: bold !important;
+                }}
+            }}
+        </style>
+    </head>
+    <body>
+        <div class="print-container">
+            <div class="print-controls">
+                <button class="print-btn" onclick="window.print()">
+                    🖨️ Print / Save as PDF
+                </button>
+            </div>
+            {''.join(documents_html)}
+        </div>
+        <script>
+            // Auto-scroll to top when loaded
+            window.scrollTo(0, 0);
+        </script>
+    </body>
+    </html>
+    """
+
+def process_paragraph_with_formatting(paragraph, replacements):
+    """Process a paragraph and return HTML with preserved formatting"""
+    try:
+        if not paragraph.runs:
+            # No runs - just plain text
+            text = paragraph.text
+            if not text.strip():
+                return None
+            
+            # Apply replacements
+            for key, value in replacements.items():
+                if key in text:
+                    text = text.replace(key, value)
+            
+            # Clean up
+            text = re.sub(r'\s+', ' ', text).strip()
+            
+            if not text:
+                return None
+            
+            # Determine style
+            style_class = 'print-paragraph'
+            if paragraph.style and paragraph.style.name:
+                if 'Heading' in paragraph.style.name:
+                    style_class = 'print-heading'
+                elif 'Title' in paragraph.style.name:
+                    style_class = 'print-title'
+            
+            # Check alignment
+            align_style = ''
+            if paragraph.alignment:
+                from docx.enum.text import WD_ALIGN_PARAGRAPH
+                if paragraph.alignment == WD_ALIGN_PARAGRAPH.CENTER:
+                    align_style = 'text-align: center;'
+                elif paragraph.alignment == WD_ALIGN_PARAGRAPH.RIGHT:
+                    align_style = 'text-align: right;'
+                elif paragraph.alignment == WD_ALIGN_PARAGRAPH.JUSTIFY:
+                    align_style = 'text-align: justify;'
+            
+            return f'<p class="{style_class}" style="{align_style}">{text}</p>'
+        
+        # Process runs with formatting
+        html_parts = []
+        current_style = {}
+        
+        for run in paragraph.runs:
+            text = run.text
+            if not text:
+                continue
+            
+            # Apply replacements
+            for key, value in replacements.items():
+                if key in text:
+                    text = text.replace(key, f'<span class="replaced-value">{value}</span>')
+            
+            # Build style string
+            styles = []
+            
+            # Font weight
+            if run.bold:
+                styles.append('font-weight: bold;')
+            
+            # Italic
+            if run.italic:
+                styles.append('font-style: italic;')
+            
+            # Underline
+            if run.underline:
+                styles.append('text-decoration: underline;')
+            
+            # Font size
+            if run.font and run.font.size:
+                size_pt = run.font.size.pt
+                styles.append(f'font-size: {size_pt}pt;')
+            
+            # Font name
+            if run.font and run.font.name:
+                styles.append(f'font-family: "{run.font.name}", "Calibri (Body)", Calibri;')
+            
+            # Font color
+            if run.font and run.font.color and run.font.color.rgb:
+                color = str(run.font.color.rgb)
+                styles.append(f'color: {color};')
+            
+            style_str = ' '.join(styles)
+            
+            if style_str:
+                html_parts.append(f'<span style="{style_str}">{text}</span>')
+            else:
+                html_parts.append(text)
+        
+        if not html_parts:
+            return None
+        
+        combined_text = ''.join(html_parts)
+        
+        # Clean up
+        combined_text = re.sub(r'\s+', ' ', combined_text).strip()
+        
+        if not combined_text:
+            return None
+        
+        # Determine paragraph style
+        style_class = 'print-paragraph'
+        if paragraph.style and paragraph.style.name:
+            if 'Heading' in paragraph.style.name:
+                style_class = 'print-heading'
+            elif 'Title' in paragraph.style.name:
+                style_class = 'print-title'
+        
+        # Check alignment
+        align_style = ''
+        if paragraph.alignment:
+            from docx.enum.text import WD_ALIGN_PARAGRAPH
+            if paragraph.alignment == WD_ALIGN_PARAGRAPH.CENTER:
+                align_style = 'text-align: center;'
+            elif paragraph.alignment == WD_ALIGN_PARAGRAPH.RIGHT:
+                align_style = 'text-align: right;'
+            elif paragraph.alignment == WD_ALIGN_PARAGRAPH.JUSTIFY:
+                align_style = 'text-align: justify;'
+        
+        return f'<p class="{style_class}" style="margin-bottom: 12px; line-height: 1.6; {align_style}">{combined_text}</p>'
+    
+    except Exception as e:
+        app.logger.error(f'Error processing paragraph: {e}')
+        return None
+
+
+def process_table_with_formatting(table, replacements):
+    """Process table and return HTML with preserved formatting"""
+    try:
+        html_rows = []
+        
+        for row in table.rows:
+            html_cells = []
+            for cell in row.cells:
+                cell_content = []
+                
+                for paragraph in cell.paragraphs:
+                    para_html = process_paragraph_with_formatting(paragraph, replacements)
+                    if para_html:
+                        # Extract just the inner content
+                        import re
+                        match = re.search(r'<p[^>]*>(.*?)</p>', para_html, re.DOTALL)
+                        if match:
+                            cell_content.append(match.group(1))
+                        else:
+                            cell_content.append(para_html)
+                
+                cell_html = ''.join(cell_content) if cell_content else '&nbsp;'
+                html_cells.append(f'<td>{cell_html}</td>')
+            
+            html_rows.append(f'<tr>{"".join(html_cells)}</tr>')
+        
+        if html_rows:
+            return f'<table class="print-table">{"".join(html_rows)}</table>'
+        
+        return None
+    
+    except Exception as e:
+        app.logger.error(f'Error processing table: {e}')
+        return None
+    
 
 # ==================== DOWNLOAD ALL FILES ====================
 @app.route('/api/admin/documents/<doc_id>/download-all', methods=['GET'])
